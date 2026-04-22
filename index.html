@@ -407,7 +407,7 @@ const DEFAULT_CONFIG = {
   stopLossPct: 2, takeProfitPct: 4, maxDrawdownPct: 15,
   pairs: ['BTC/USDT','ETH/USDT','SOL/USDT'],
   paperBalance: 20, isRunning: false,
-  binanceApiKey: '', binanceApiSecret: '', serverUrl: ''
+  binanceApiKey: '', binanceApiSecret: '', serverUrl: 'https://algobot-wl2q.onrender.com'
 };
 const DEFAULT_DATA = { trades: [], signals: [], snapshots: [], positions: {} };
 
@@ -1025,6 +1025,7 @@ if ('serviceWorker' in navigator) {
 }
 
 init();
+syncFromCloud(); // pull cloud data immediately on open
 
 // Cloud sync — if server URL set, pull dashboard data from cloud every 30s
 async function syncFromCloud() {
