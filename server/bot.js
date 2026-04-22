@@ -15,8 +15,10 @@ const DB_KEY        = 'algobot:data';
 
 async function redisGet(key) {
   try {
-    const res = await fetch(`${UPSTASH_URL}/get/${key}`, {
-      headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
+    const res = await fetch(`${UPSTASH_URL}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${UPSTASH_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(['GET', key]),
       timeout: 8000
     });
     const j = await res.json();
@@ -27,10 +29,11 @@ async function redisGet(key) {
 
 async function redisSet(key, value) {
   try {
-    const res = await fetch(`${UPSTASH_URL}/set/${key}`, {
+    // Upstash REST: POST array ["SET", key, value] to /
+    const res = await fetch(`${UPSTASH_URL}`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${UPSTASH_TOKEN}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(JSON.stringify(value)),
+      body: JSON.stringify(['SET', key, JSON.stringify(value)]),
       timeout: 8000
     });
     const j = await res.json();
