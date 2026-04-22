@@ -7,34 +7,46 @@
 
 const fetch = require('node-fetch');
 const http  = require('http');
+const https = require('https');
 
 // ─── Upstash Redis (REST API — no extra deps needed) ─────────────────────────
 const UPSTASH_URL   = process.env.UPSTASH_REDIS_REST_URL;
 const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 const DB_KEY        = 'algobot:data';
 
-async function redisCmd(...args) {
-  const timeout = new Promise((_, reject) =>
-    setTimeout(() => reject(new Error('Redis timeout')), 10000)
-  );
-  try {
-    const res = await Promise.race([
-      fetch(UPSTASH_URL, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${UPSTASH_TOKEN}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(args)
-      }),
-      timeout
-    ]);
-    if (!res.ok) { console.error('Redis HTTP error:', res.status); return null; }
-    const j = await res.json();
-    if (j.error) { console.error('Redis error:', j.error); return null; }
-    console.log(`[Redis] ${args[0]} => ${JSON.stringify(j.result).slice(0,40)}`);
-    return j.result;
-  } catch (e) {
-    console.error('Redis cmd error:', e.message);
-    return null;
-  }
+function redisCmd(...args) {
+  return new Promise((resolve) => {
+    try {
+      const body = JSON.stringify(args);
+      const url  = new URL(UPSTASH_URL);
+      const options = {
+        hostname: url.hostname,
+        path:     url.pathname || '/',
+        method:   'POST',
+        headers:  {
+          'Authorization':  `Bearer ${UPSTASH_TOKEN}`,
+          'Content-Type':   'application/json',
+          'Content-Length': Buffer.byteLength(body)
+        }
+      };
+      const req = https.request(options, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          try {
+            const j = JSON.parse(data);
+            if (j.error) { console.error('Redis error:', j.error); return resolve(null); }
+            console.log(`[Redis] ${args[0]} ok`);
+            resolve(j.result);
+          } catch (e) { console.error('Redis parse error:', e.message, data.slice(0,100)); resolve(null); }
+        });
+      });
+      req.setTimeout(10000, () => { console.error('Redis timeout'); req.destroy(); resolve(null); });
+      req.on('error', (e) => { console.error('Redis request error:', e.message); resolve(null); });
+      req.write(body);
+      req.end();
+    } catch (e) { console.error('Redis cmd setup error:', e.message); resolve(null); }
+  });
 }
 
 async function redisGet(key) {
