@@ -237,6 +237,8 @@ async function analyze(symbol) {
 }
 
 // ─── Paper trading ────────────────────────────────────────────────────────────
+const FEE_RATE = 0.006; // 0.6% taker fee per side (Coinbase Advanced Trade, <$1k volume)
+
 function executePaper(a) {
   const cfg = db.config;
   const { symbol, price, signal, confidence } = a;
@@ -245,17 +247,21 @@ function executePaper(a) {
   if (signal === 'buy' && !pos) {
     const posVal = cfg.paperBalance * (cfg.maxPositionPct / 100);
     if (posVal < 0.50 || cfg.paperBalance < posVal) return;
-    const qty = posVal / price;
-    cfg.paperBalance -= posVal;
+    const buyFee = posVal * FEE_RATE;           // fee deducted at entry
+    const netCost = posVal + buyFee;
+    if (cfg.paperBalance < netCost) return;
+    const qty = posVal / price;                  // qty based on intended position
+    cfg.paperBalance -= netCost;                 // deduct position + entry fee
     db.positions[symbol] = {
       symbol, qty, entryPrice: price,
+      entryFee: buyFee,
       stopLoss:   price * (1 - cfg.stopLossPct   / 100),
       takeProfit: price * (1 + cfg.takeProfitPct / 100),
       openedAt: Date.now()
     };
-    db.trades.unshift({ id: Date.now(), symbol, side: 'buy', qty, entryPrice: price, status: 'open', openedAt: Date.now() });
+    db.trades.unshift({ id: Date.now(), symbol, side: 'buy', qty, entryPrice: price, entryFee: buyFee, status: 'open', openedAt: Date.now() });
     db.signals.unshift({ ...a, acted: true });
-    console.log(`[BUY]  ${symbol} @ $${price.toFixed(4)} | bal $${cfg.paperBalance.toFixed(4)}`);
+    console.log(`[BUY]  ${symbol} @ $${price.toFixed(4)} | fee $${buyFee.toFixed(4)} | bal $${cfg.paperBalance.toFixed(4)}`);
 
   } else if (pos) {
     const cur = priceCache[symbol] || price;
@@ -265,15 +271,19 @@ function executePaper(a) {
     const sellSig = signal === 'sell' && confidence > 55;
 
     if (hitSL || hitTP || sellSig) {
-      const pnl    = (cur - pos.entryPrice) * pos.qty;
-      const pnlPct = ((cur - pos.entryPrice) / pos.entryPrice) * 100;
+      const grossProceeds = cur * pos.qty;
+      const exitFee  = grossProceeds * FEE_RATE; // fee deducted at exit
+      const netProceeds = grossProceeds - exitFee;
+      const totalFees = (pos.entryFee || 0) + exitFee;
+      const pnl    = netProceeds - (pos.entryPrice * pos.qty); // net of both fees
+      const pnlPct = (pnl / (pos.entryPrice * pos.qty)) * 100;
       const reason = hitSL ? 'stop_loss' : hitTP ? 'take_profit' : 'signal';
-      cfg.paperBalance += cur * pos.qty;
+      cfg.paperBalance += netProceeds;
       const t = db.trades.find(t => t.symbol === symbol && t.status === 'open');
-      if (t) Object.assign(t, { status: 'closed', exitPrice: cur, pnl, pnlPct, reason, closedAt: Date.now() });
+      if (t) Object.assign(t, { status: 'closed', exitPrice: cur, exitFee, totalFees, pnl, pnlPct, reason, closedAt: Date.now() });
       delete db.positions[symbol];
       db.signals.unshift({ ...a, acted: true });
-      console.log(`[SELL] ${symbol} @ $${cur.toFixed(4)} | PnL ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(4)} [${reason}]`);
+      console.log(`[SELL] ${symbol} @ $${cur.toFixed(4)} | fees $${totalFees.toFixed(4)} | PnL ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(4)} [${reason}]`);
     } else {
       if (signal !== 'hold') db.signals.unshift({ ...a, acted: false });
     }
@@ -364,9 +374,10 @@ http.createServer(async (req, res) => {
   }
 
   if (url === '/api/dashboard') {
-    const closed   = db.trades.filter(t => t.status === 'closed');
-    const wins     = closed.filter(t => (t.pnl||0) > 0);
-    const totalPnl = closed.reduce((s, t) => s + (t.pnl||0), 0);
+    const closed    = db.trades.filter(t => t.status === 'closed');
+    const wins      = closed.filter(t => (t.pnl||0) > 0);
+    const totalPnl  = closed.reduce((s, t) => s + (t.pnl||0), 0);
+    const totalFees = closed.reduce((s, t) => s + (t.totalFees||0), 0);
     const posVal   = Object.values(db.positions).reduce((s, p) => s + (p.currentPrice||p.entryPrice)*p.qty, 0);
     const total    = db.config.paperBalance + posVal;
     json(res, 200, {
@@ -385,6 +396,7 @@ http.createServer(async (req, res) => {
         totalPnlPct:    ((total - db.config.startingCapital) / db.config.startingCapital) * 100,
         winRate:        closed.length > 0 ? (wins.length / closed.length) * 100 : 0,
         totalTrades:    closed.length,
+        totalFees,
         openPositions:  Object.keys(db.positions).length,
         lastCycle:      db.snapshots.length ? db.snapshots[db.snapshots.length-1].t : null
       }
