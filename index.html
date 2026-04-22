@@ -705,12 +705,11 @@ function toast(msg) {
 // ═══════════════════════════════════════════
 // THEME
 // ═══════════════════════════════════════════
-let theme=localStorage.getItem('ab_theme')||'dark';
+let theme='dark';
 document.documentElement.setAttribute('data-theme',theme);
 document.getElementById('theme-btn').addEventListener('click',()=>{
   theme=theme==='dark'?'light':'dark';
   document.documentElement.setAttribute('data-theme',theme);
-  localStorage.setItem('ab_theme',theme);
 });
 
 // ═══════════════════════════════════════════
