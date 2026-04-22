@@ -409,6 +409,15 @@ http.createServer(async (req, res) => {
     json(res, 200, { ok: true }); return;
   }
 
+  // ── Redis test (debug) ──
+  if (url === '/api/redis-test') {
+    const setResult = await redisCmd('SET', 'algobot:test', JSON.stringify({ok:true,ts:Date.now()}));
+    const getResult = await redisCmd('GET', 'algobot:test');
+    const saveResult = await redisSet(DB_KEY, db);
+    json(res, 200, { setResult, getResult, saveResult, url: UPSTASH_URL ? 'set' : 'MISSING', token: UPSTASH_TOKEN ? 'set' : 'MISSING' });
+    return;
+  }
+
   json(res, 404, { error: 'not found' });
 
 }).listen(PORT, () => console.log(`[SERVER] Port ${PORT}`));
