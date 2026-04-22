@@ -218,7 +218,7 @@ function adaptParams() {
 // ─── Signal engine ────────────────────────────────────────────────────────────
 async function analyze(symbol) {
   const cfg = db.config;
-  const klines = await fetchKlines(symbol, '1h', Math.max(cfg.emaSlow * 2 + 10, 60));
+  const klines = await fetchKlines(symbol, '15m', Math.max(cfg.emaSlow * 2 + 10, 60));
   if (klines.length < cfg.emaSlow + 2) return null;
   const closes = klines.map(k => k.close);
   const ef = ema(closes, cfg.emaFast), es = ema(closes, cfg.emaSlow), ri = rsi(closes, cfg.rsiPeriod);
@@ -321,7 +321,7 @@ async function runCycle() {
   } finally { cycling = false; }
 }
 
-setInterval(runCycle, 5 * 60 * 1000);
+setInterval(runCycle, 2 * 60 * 1000); // every 2 minutes
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 (async () => {
@@ -335,7 +335,7 @@ setInterval(runCycle, 5 * 60 * 1000);
   // Pre-warm price cache so dashboard shows prices immediately
   await fetchAllPrices(db.config.pairs);
   runCycle();
-  console.log('[BOT] AlgoBot started — cycling every 5 minutes');
+  console.log('[BOT] AlgoBot started — cycling every 2 minutes');
 })();
 
 // ─── HTTP API ─────────────────────────────────────────────────────────────────
