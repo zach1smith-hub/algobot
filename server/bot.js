@@ -1,17 +1,44 @@
 /**
  * AlgoBot — 24/7 Cloud Trading Bot
  * Server is the ONLY source of truth.
+ * Data stored in Upstash Redis (survives redeploys forever).
  * Phone app is a pure read-only dashboard.
  */
 
 const fetch = require('node-fetch');
-const fs = require('fs');
-const http = require('http');
-const path = require('path');
+const http  = require('http');
 
-// ─── Persistent storage ───────────────────────────────────────────────────────
-const DATA_FILE = path.join(__dirname, 'data.json');
+// ─── Upstash Redis (REST API — no extra deps needed) ─────────────────────────
+const UPSTASH_URL   = process.env.UPSTASH_REDIS_REST_URL;
+const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+const DB_KEY        = 'algobot:data';
 
+async function redisGet(key) {
+  try {
+    const res = await fetch(`${UPSTASH_URL}/get/${key}`, {
+      headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
+      timeout: 8000
+    });
+    const j = await res.json();
+    if (j.result == null) return null;
+    return JSON.parse(j.result);
+  } catch (e) { console.error('Redis GET error:', e.message); return null; }
+}
+
+async function redisSet(key, value) {
+  try {
+    const res = await fetch(`${UPSTASH_URL}/set/${key}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${UPSTASH_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(JSON.stringify(value)),
+      timeout: 8000
+    });
+    const j = await res.json();
+    return j.result === 'OK';
+  } catch (e) { console.error('Redis SET error:', e.message); return false; }
+}
+
+// ─── Defaults ────────────────────────────────────────────────────────────────
 const DEFAULTS = {
   config: {
     mode: 'paper',
@@ -26,41 +53,32 @@ const DEFAULTS = {
   trades: [], signals: [], snapshots: [], positions: {}
 };
 
-function loadDb() {
-  try {
-    if (fs.existsSync(DATA_FILE)) {
-      const parsed = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-      return { ...DEFAULTS, ...parsed, config: { ...DEFAULTS.config, ...parsed.config } };
-    }
-  } catch (e) { console.error('Load error:', e.message); }
-  return JSON.parse(JSON.stringify(DEFAULTS));
+let db = JSON.parse(JSON.stringify(DEFAULTS));
+
+async function loadDb() {
+  const saved = await redisGet(DB_KEY);
+  if (saved) {
+    db = { ...DEFAULTS, ...saved, config: { ...DEFAULTS.config, ...saved.config } };
+    console.log('[DB] Loaded from Upstash. Balance:', db.config.paperBalance);
+  } else {
+    db = JSON.parse(JSON.stringify(DEFAULTS));
+    console.log('[DB] No saved data — starting fresh with $20.');
+    await saveDb();
+  }
 }
 
-function saveDb() {
-  try { fs.writeFileSync(DATA_FILE, JSON.stringify(db)); }
-  catch (e) { console.error('Save error:', e.message); }
+async function saveDb() {
+  await redisSet(DB_KEY, db);
 }
-
-let db = loadDb();
-db.config.isRunning = true;
-saveDb();
 
 // ─── Binance public API ───────────────────────────────────────────────────────
 const BINANCE = 'https://api.binance.com';
 let priceCache = {};
 
-async function fetchPrice(symbol) {
-  try {
-    const res = await fetch(`${BINANCE}/api/v3/ticker/price?symbol=${symbol.replace('/','')}}`, { timeout: 6000 });
-    if (!res.ok) throw new Error();
-    return +((await res.json()).price);
-  } catch { return null; }
-}
-
 async function fetchAllPrices(pairs) {
   try {
     const res = await fetch(`${BINANCE}/api/v3/ticker/price`, { timeout: 8000 });
-    if (!res.ok) throw new Error();
+    if (!res.ok) throw new Error('Binance error');
     const all = await res.json();
     const wanted = new Set(pairs.map(p => p.replace('/', '')));
     all.forEach(t => { if (wanted.has(t.symbol)) priceCache[t.symbol.slice(0,-4)+'/USDT'] = +t.price; });
@@ -134,7 +152,6 @@ async function analyze(symbol) {
   else if (bearCross && ri[L] > cfg.rsiOversold)   { signal = 'sell'; conf = 70 + (ri[L] - cfg.rsiOversold) / (100 - cfg.rsiOversold) * 30; }
   else if (ef[L] < es[L] && ri[L] > 55)            { signal = 'sell'; conf = 40 + (ri[L] - 55); }
   conf = Math.min(99, Math.max(1, conf));
-  // Use live price if available
   const price = priceCache[symbol] || closes[L];
   return { symbol, price, signal, emaFast: ef[L], emaSlow: es[L], rsi: ri[L], confidence: conf, time: Date.now() };
 }
@@ -152,8 +169,8 @@ function executePaper(a) {
     cfg.paperBalance -= posVal;
     db.positions[symbol] = {
       symbol, qty, entryPrice: price,
-      stopLoss:    price * (1 - cfg.stopLossPct   / 100),
-      takeProfit:  price * (1 + cfg.takeProfitPct / 100),
+      stopLoss:   price * (1 - cfg.stopLossPct   / 100),
+      takeProfit: price * (1 + cfg.takeProfitPct / 100),
       openedAt: Date.now()
     };
     db.trades.unshift({ id: Date.now(), symbol, side: 'buy', qty, entryPrice: price, status: 'open', openedAt: Date.now() });
@@ -162,10 +179,9 @@ function executePaper(a) {
 
   } else if (pos) {
     const cur = priceCache[symbol] || price;
-    // Update live price on position
     pos.currentPrice = cur;
-    const hitSL = pos.stopLoss   && cur <= pos.stopLoss;
-    const hitTP = pos.takeProfit && cur >= pos.takeProfit;
+    const hitSL  = pos.stopLoss   && cur <= pos.stopLoss;
+    const hitTP  = pos.takeProfit && cur >= pos.takeProfit;
     const sellSig = signal === 'sell' && confidence > 55;
 
     if (hitSL || hitTP || sellSig) {
@@ -204,13 +220,12 @@ async function runCycle() {
   try {
     console.log(`\n[CYCLE] ${new Date().toISOString()} | $${db.config.paperBalance.toFixed(4)} | ${Object.keys(db.positions).length} open`);
 
-    // Drawdown guard
     const posVal = Object.values(db.positions).reduce((s, p) => s + (p.currentPrice||p.entryPrice)*p.qty, 0);
     const total  = db.config.paperBalance + posVal;
     const dd     = ((db.config.startingCapital - total) / db.config.startingCapital) * 100;
     if (dd > db.config.maxDrawdownPct) {
       console.log(`[STOP] Max drawdown hit (${dd.toFixed(1)}%). Bot paused.`);
-      db.config.isRunning = false; saveDb(); return;
+      db.config.isRunning = false; await saveDb(); return;
     }
 
     await fetchAllPrices(db.config.pairs);
@@ -221,13 +236,24 @@ async function runCycle() {
     }
 
     snapshot();
-    saveDb();
+    await saveDb();
   } finally { cycling = false; }
 }
 
-setInterval(runCycle, 5 * 60 * 1000); // every 5 minutes
-runCycle();
-console.log('[BOT] AlgoBot started — cycling every 5 minutes');
+setInterval(runCycle, 5 * 60 * 1000);
+
+// ─── Boot ─────────────────────────────────────────────────────────────────────
+(async () => {
+  if (!UPSTASH_URL || !UPSTASH_TOKEN) {
+    console.error('[FATAL] Missing UPSTASH_REDIS_REST_URL or UPSTASH_REDIS_REST_TOKEN env vars.');
+    process.exit(1);
+  }
+  await loadDb();
+  db.config.isRunning = true;
+  await saveDb();
+  runCycle();
+  console.log('[BOT] AlgoBot started — cycling every 5 minutes');
+})();
 
 // ─── HTTP API ─────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
@@ -249,73 +275,66 @@ http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') { json(res, 200, {}); return; }
   const url = req.url.split('?')[0];
 
-  // ── Health ──
   if (url === '/' || url === '/health') {
     json(res, 200, { status: 'ok', running: db.config.isRunning, uptime: Math.floor(process.uptime()) });
     return;
   }
 
-  // ── Full dashboard (everything the phone needs in one call) ──
   if (url === '/api/dashboard') {
-    const closed  = db.trades.filter(t => t.status === 'closed');
-    const wins    = closed.filter(t => (t.pnl||0) > 0);
+    const closed   = db.trades.filter(t => t.status === 'closed');
+    const wins     = closed.filter(t => (t.pnl||0) > 0);
     const totalPnl = closed.reduce((s, t) => s + (t.pnl||0), 0);
-    const posVal  = Object.values(db.positions).reduce((s, p) => s + (p.currentPrice||p.entryPrice)*p.qty, 0);
-    const total   = db.config.paperBalance + posVal;
+    const posVal   = Object.values(db.positions).reduce((s, p) => s + (p.currentPrice||p.entryPrice)*p.qty, 0);
+    const total    = db.config.paperBalance + posVal;
     json(res, 200, {
-      config:        { ...db.config, binanceApiSecret: db.config.binanceApiSecret ? '***' : '' },
-      positions:     db.positions,
-      trades:        db.trades.slice(0, 100),
-      signals:       db.signals.slice(0, 100),
-      snapshots:     db.snapshots.slice(-288),
-      prices:        priceCache,
+      config:    { ...db.config, binanceApiSecret: db.config.binanceApiSecret ? '***' : '' },
+      positions: db.positions,
+      trades:    db.trades.slice(0, 100),
+      signals:   db.signals.slice(0, 100),
+      snapshots: db.snapshots.slice(-288),
+      prices:    priceCache,
       stats: {
-        totalValue:    total,
-        cashBalance:   db.config.paperBalance,
+        totalValue:     total,
+        cashBalance:    db.config.paperBalance,
         positionsValue: posVal,
         totalPnl,
-        totalPnlPct:   ((total - db.config.startingCapital) / db.config.startingCapital) * 100,
-        winRate:       closed.length > 0 ? (wins.length / closed.length) * 100 : 0,
-        totalTrades:   closed.length,
-        openPositions: Object.keys(db.positions).length,
-        lastCycle:     db.snapshots.length ? db.snapshots[db.snapshots.length-1].t : null
+        totalPnlPct:    ((total - db.config.startingCapital) / db.config.startingCapital) * 100,
+        winRate:        closed.length > 0 ? (wins.length / closed.length) * 100 : 0,
+        totalTrades:    closed.length,
+        openPositions:  Object.keys(db.positions).length,
+        lastCycle:      db.snapshots.length ? db.snapshots[db.snapshots.length-1].t : null
       }
     });
     return;
   }
 
-  // ── Update config ──
   if (url === '/api/config' && req.method === 'POST') {
     const body = await readBody(req);
-    // Never let client overwrite balance or trades via config
     const { trades, signals, snapshots, positions, paperBalance, startingCapital, ...safe } = body;
     db.config = { ...db.config, ...safe };
-    saveDb();
+    await saveDb();
     json(res, 200, { ok: true });
     return;
   }
 
-  // ── Bot control ──
   if (url === '/api/bot/start' && req.method === 'POST') {
-    db.config.isRunning = true; saveDb(); runCycle();
+    db.config.isRunning = true; await saveDb(); runCycle();
     json(res, 200, { ok: true, isRunning: true }); return;
   }
   if (url === '/api/bot/stop' && req.method === 'POST') {
-    db.config.isRunning = false; saveDb();
+    db.config.isRunning = false; await saveDb();
     json(res, 200, { ok: true, isRunning: false }); return;
   }
 
-  // ── Force scan ──
   if (url === '/api/scan' && req.method === 'POST') {
     runCycle();
     json(res, 200, { ok: true }); return;
   }
 
-  // ── Reset paper ──
   if (url === '/api/reset' && req.method === 'POST') {
     db.config.paperBalance = db.config.startingCapital || 20;
     db.positions = {}; db.trades = []; db.signals = []; db.snapshots = [];
-    saveDb();
+    await saveDb();
     json(res, 200, { ok: true }); return;
   }
 
