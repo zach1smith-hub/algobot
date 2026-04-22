@@ -10,8 +10,9 @@ const http  = require('http');
 const https = require('https');
 
 // ─── Upstash Redis (REST API — no extra deps needed) ─────────────────────────
-const UPSTASH_URL   = process.env.UPSTASH_REDIS_REST_URL;
-const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+// Strip any invisible/accidental wrapper characters from env vars
+const UPSTASH_URL   = (process.env.UPSTASH_REDIS_REST_URL   || '').replace(/[^a-z0-9.:/_-]/gi, '').trim();
+const UPSTASH_TOKEN = (process.env.UPSTASH_REDIS_REST_TOKEN || '').replace(/[^a-zA-Z0-9+/=_-]/g, '').trim();
 const DB_KEY        = 'algobot:data';
 
 function redisCmd(...args) {
