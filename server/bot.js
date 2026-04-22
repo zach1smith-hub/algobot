@@ -14,23 +14,24 @@ const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 const DB_KEY        = 'algobot:data';
 
 async function redisCmd(...args) {
-  // node-fetch v2 timeout must be in options object at top level
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 10000);
+  const timeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error('Redis timeout')), 10000)
+  );
   try {
-    const res = await fetch(UPSTASH_URL, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${UPSTASH_TOKEN}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(args),
-      signal: controller.signal
-    });
-    clearTimeout(timer);
+    const res = await Promise.race([
+      fetch(UPSTASH_URL, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${UPSTASH_TOKEN}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(args)
+      }),
+      timeout
+    ]);
     if (!res.ok) { console.error('Redis HTTP error:', res.status); return null; }
     const j = await res.json();
     if (j.error) { console.error('Redis error:', j.error); return null; }
+    console.log(`[Redis] ${args[0]} => ${JSON.stringify(j.result).slice(0,40)}`);
     return j.result;
   } catch (e) {
-    clearTimeout(timer);
     console.error('Redis cmd error:', e.message);
     return null;
   }
