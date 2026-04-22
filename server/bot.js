@@ -251,6 +251,8 @@ setInterval(runCycle, 5 * 60 * 1000);
   await loadDb();
   db.config.isRunning = true;
   await saveDb();
+  // Pre-warm price cache so dashboard shows prices immediately
+  await fetchAllPrices(db.config.pairs);
   runCycle();
   console.log('[BOT] AlgoBot started — cycling every 5 minutes');
 })();
