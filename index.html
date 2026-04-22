@@ -412,6 +412,8 @@ const DEFAULT_CONFIG = {
 const DEFAULT_DATA = { trades: [], signals: [], snapshots: [], positions: {} };
 
 let cfg = load('algobot_cfg', DEFAULT_CONFIG);
+// Always use the cloud server URL — never rely on local storage for this
+cfg.serverUrl = 'https://algobot-wl2q.onrender.com';
 let data = load('algobot_data', DEFAULT_DATA);
 let botInterval = null;
 let priceCache = {};
@@ -1006,17 +1008,14 @@ document.getElementById('scan-btn2').addEventListener('click', doScan);
 async function init() {
   initSliders();
   renderAll();
+  // Always pull from cloud server first — this is the single source of truth
+  await syncFromCloud();
   // load initial prices
   try {
     const prices = await fetchPrices(cfg.pairs);
     Object.assign(priceCache, prices);
     renderPrices();
   } catch {}
-  // resume bot if it was running
-  if (cfg.isRunning) {
-    cfg.isRunning=false; // reset first so startBot works
-    startBot();
-  }
 }
 
 // service worker
@@ -1025,7 +1024,6 @@ if ('serviceWorker' in navigator) {
 }
 
 init();
-syncFromCloud(); // pull cloud data immediately on open
 
 // Cloud sync — if server URL set, pull dashboard data from cloud every 30s
 async function syncFromCloud() {
