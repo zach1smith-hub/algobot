@@ -13,32 +13,41 @@ const UPSTASH_URL   = process.env.UPSTASH_REDIS_REST_URL;
 const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 const DB_KEY        = 'algobot:data';
 
-async function redisGet(key) {
+async function redisCmd(...args) {
+  // node-fetch v2 timeout must be in options object at top level
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10000);
   try {
-    const res = await fetch(`${UPSTASH_URL}`, {
+    const res = await fetch(UPSTASH_URL, {
       method: 'POST',
       headers: { Authorization: `Bearer ${UPSTASH_TOKEN}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(['GET', key]),
-      timeout: 8000
+      body: JSON.stringify(args),
+      signal: controller.signal
     });
+    clearTimeout(timer);
+    if (!res.ok) { console.error('Redis HTTP error:', res.status); return null; }
     const j = await res.json();
-    if (j.result == null) return null;
-    return JSON.parse(j.result);
-  } catch (e) { console.error('Redis GET error:', e.message); return null; }
+    if (j.error) { console.error('Redis error:', j.error); return null; }
+    return j.result;
+  } catch (e) {
+    clearTimeout(timer);
+    console.error('Redis cmd error:', e.message);
+    return null;
+  }
+}
+
+async function redisGet(key) {
+  try {
+    const result = await redisCmd('GET', key);
+    if (result == null) return null;
+    return JSON.parse(result);
+  } catch (e) { console.error('Redis GET parse error:', e.message); return null; }
 }
 
 async function redisSet(key, value) {
-  try {
-    // Upstash REST: POST array ["SET", key, value] to /
-    const res = await fetch(`${UPSTASH_URL}`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${UPSTASH_TOKEN}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(['SET', key, JSON.stringify(value)]),
-      timeout: 8000
-    });
-    const j = await res.json();
-    return j.result === 'OK';
-  } catch (e) { console.error('Redis SET error:', e.message); return false; }
+  const result = await redisCmd('SET', key, JSON.stringify(value));
+  if (result !== 'OK') console.error('Redis SET failed, result:', result);
+  return result === 'OK';
 }
 
 // ─── Defaults ────────────────────────────────────────────────────────────────
@@ -136,6 +145,60 @@ function rsi(vals, period = 14) {
     out.push(al === 0 ? 100 : 100 - 100 / (1 + ag / al));
   }
   return out;
+}
+
+// ─── Self-learning: adapt parameters based on recent trade outcomes ──────────
+function adaptParams() {
+  const closed = db.trades.filter(t => t.status === 'closed');
+  if (closed.length < 5) return; // need at least 5 trades to learn
+
+  // Only look at last 20 trades
+  const recent = closed.slice(0, 20);
+  const wins   = recent.filter(t => (t.pnl||0) > 0);
+  const losses = recent.filter(t => (t.pnl||0) <= 0);
+  const winRate = wins.length / recent.length;
+
+  const cfg = db.config;
+  let changed = false;
+
+  // Win rate too low (<40%) — tighten entry: raise confidence threshold by
+  // increasing rsiOversold (buy only when more oversold) and lowering rsiOverbought
+  if (winRate < 0.40) {
+    if (cfg.rsiOversold < 38) { cfg.rsiOversold = Math.min(38, cfg.rsiOversold + 2); changed = true; }
+    if (cfg.rsiOverbought > 65) { cfg.rsiOverbought = Math.max(65, cfg.rsiOverbought - 2); changed = true; }
+  }
+
+  // Win rate high (>65%) — we can loosen slightly to catch more opportunities
+  if (winRate > 0.65) {
+    if (cfg.rsiOversold > 25) { cfg.rsiOversold = Math.max(25, cfg.rsiOversold - 1); changed = true; }
+    if (cfg.rsiOverbought < 75) { cfg.rsiOverbought = Math.min(75, cfg.rsiOverbought + 1); changed = true; }
+  }
+
+  // Average loss bigger than average win — widen take profit or tighten stop
+  if (wins.length > 0 && losses.length > 0) {
+    const avgWin  = wins.reduce((s,t)=>s+(t.pnlPct||0),0) / wins.length;
+    const avgLoss = Math.abs(losses.reduce((s,t)=>s+(t.pnlPct||0),0) / losses.length);
+    if (avgLoss > avgWin * 1.5) {
+      // Losses too big — tighten stop loss
+      if (cfg.stopLossPct > 1.0) { cfg.stopLossPct = Math.max(1.0, cfg.stopLossPct - 0.2); changed = true; }
+    }
+    if (avgWin < avgLoss * 0.5) {
+      // Wins too small — widen take profit
+      if (cfg.takeProfitPct < 8) { cfg.takeProfitPct = Math.min(8, cfg.takeProfitPct + 0.2); changed = true; }
+    }
+  }
+
+  if (changed) {
+    console.log(`[LEARN] Adapted params — winRate:${(winRate*100).toFixed(0)}% rsiOS:${cfg.rsiOversold} rsiOB:${cfg.rsiOverbought} SL:${cfg.stopLossPct.toFixed(1)}% TP:${cfg.takeProfitPct.toFixed(1)}%`);
+    // Store learning history
+    if (!db.learningLog) db.learningLog = [];
+    db.learningLog.unshift({
+      t: Date.now(), winRate, trades: recent.length,
+      rsiOversold: cfg.rsiOversold, rsiOverbought: cfg.rsiOverbought,
+      stopLossPct: cfg.stopLossPct, takeProfitPct: cfg.takeProfitPct
+    });
+    if (db.learningLog.length > 100) db.learningLog = db.learningLog.slice(0, 100);
+  }
 }
 
 // ─── Signal engine ────────────────────────────────────────────────────────────
@@ -239,6 +302,7 @@ async function runCycle() {
     }
 
     snapshot();
+    adaptParams();
     await saveDb();
   } finally { cycling = false; }
 }
@@ -296,8 +360,9 @@ http.createServer(async (req, res) => {
       positions: db.positions,
       trades:    db.trades.slice(0, 100),
       signals:   db.signals.slice(0, 100),
-      snapshots: db.snapshots.slice(-288),
-      prices:    priceCache,
+      snapshots:   db.snapshots.slice(-288),
+      prices:      priceCache,
+      learningLog: (db.learningLog||[]).slice(0,20),
       stats: {
         totalValue:     total,
         cashBalance:    db.config.paperBalance,
