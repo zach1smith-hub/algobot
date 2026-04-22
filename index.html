@@ -331,6 +331,14 @@ input[type=text]:focus,input[type=password]:focus{border-color:var(--green)}
       <div class="section-sep"></div>
     </div>
 
+    <div class="section-title">☁️ Cloud Bot (24/7)</div>
+    <div class="input-group">
+      <label class="input-label">Server URL</label>
+      <input type="text" id="inp-server" placeholder="https://your-app.onrender.com"/>
+    </div>
+    <div id="server-status" style="font-size:11px;margin-bottom:10px;color:var(--muted)">Not connected — bot only runs when app is open</div>
+    <div class="section-sep"></div>
+
     <div class="section-title">Starting Capital</div>
     <div class="setting-row">
       <div><div class="setting-label">Paper Balance</div><div class="setting-desc">Reset simulated cash</div></div>
@@ -399,7 +407,7 @@ const DEFAULT_CONFIG = {
   stopLossPct: 2, takeProfitPct: 4, maxDrawdownPct: 15,
   pairs: ['BTC/USDT','ETH/USDT','SOL/USDT'],
   paperBalance: 20, isRunning: false,
-  binanceApiKey: '', binanceApiSecret: ''
+  binanceApiKey: '', binanceApiSecret: '', serverUrl: ''
 };
 const DEFAULT_DATA = { trades: [], signals: [], snapshots: [], positions: {} };
 
@@ -905,9 +913,16 @@ function resetPaper() {
 function saveSettings() {
   const apiKey = document.getElementById('inp-apikey').value.trim();
   const apiSecret = document.getElementById('inp-apisecret').value.trim();
+  const serverUrl = document.getElementById('inp-server').value.trim().replace(/\/+$/,'');
   if (apiKey) cfg.binanceApiKey=apiKey;
   if (apiSecret) cfg.binanceApiSecret=apiSecret;
-  saveCfg(); renderAll();
+  cfg.serverUrl = serverUrl;
+  saveCfg();
+  if (serverUrl) {
+    // Push config to cloud server
+    fetch(serverUrl+'/api/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(cfg)}).catch(()=>{});
+  }
+  renderAll();
   toast('✅ Settings saved');
 }
 
@@ -1011,14 +1026,52 @@ if ('serviceWorker' in navigator) {
 
 init();
 
+// Cloud sync — if server URL set, pull dashboard data from cloud every 30s
+async function syncFromCloud() {
+  if (!cfg.serverUrl) return;
+  try {
+    const res = await fetch(cfg.serverUrl+'/api/dashboard', {signal:AbortSignal.timeout(8000)});
+    if (!res.ok) throw new Error('bad response');
+    const d = await res.json();
+    // Merge cloud data into local state
+    if (d.config) { cfg = {...cfg, ...d.config, serverUrl:cfg.serverUrl}; saveCfg(); }
+    if (d.recentTrades) data.trades = d.recentTrades;
+    if (d.recentSignals) data.signals = d.recentSignals;
+    if (d.snapshots) data.snapshots = d.snapshots;
+    if (d.positions) data.positions = d.positions;
+    if (d.stats) {
+      const el = document.getElementById('server-status');
+      if (el) {
+        const last = d.stats.lastCycle ? new Date(d.stats.lastCycle).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : '—';
+        el.textContent = '✅ Cloud bot connected · last scan '+last;
+        el.style.color='var(--green)';
+      }
+    }
+    saveData();
+    renderAll();
+  } catch(e) {
+    const el = document.getElementById('server-status');
+    if (el) { el.textContent = '⚠️ Cloud server unreachable'; el.style.color='var(--yellow)'; }
+  }
+}
+
 // Auto-refresh prices every 30s even if bot is stopped
 setInterval(async ()=>{
+  if (cfg.serverUrl) { syncFromCloud(); return; }
   try {
     const prices = await fetchPrices(cfg.pairs);
     Object.assign(priceCache, prices);
     renderPrices(); renderPositions(); renderStats();
   } catch {}
 }, 30000);
+
+// Populate server URL field when settings tab opens
+const origRenderPairsChips = renderPairsChips;
+function renderPairsChips() {
+  origRenderPairsChips();
+  const el = document.getElementById('inp-server');
+  if (el && cfg.serverUrl) el.value = cfg.serverUrl;
+}
 </script>
 </body>
 </html>
