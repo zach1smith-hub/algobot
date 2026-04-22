@@ -423,10 +423,30 @@ http.createServer(async (req, res) => {
 
   // ── Redis test (debug) ──
   if (url === '/api/redis-test') {
-    const setResult = await redisCmd('SET', 'algobot:test', JSON.stringify({ok:true,ts:Date.now()}));
-    const getResult = await redisCmd('GET', 'algobot:test');
+    const urlLen   = UPSTASH_URL   ? UPSTASH_URL.length   : 0;
+    const tokenLen = UPSTASH_TOKEN ? UPSTASH_TOKEN.length : 0;
+    const urlVal   = UPSTASH_URL   ? UPSTASH_URL.replace(/[^a-z0-9.:/-]/gi,'?') : 'MISSING';
+    // Try a direct inline HTTPS call to isolate any scope issues
+    let inlineResult = null;
+    try {
+      const parsedUrl = new URL(UPSTASH_URL);
+      inlineResult = await new Promise((resolve) => {
+        const body = JSON.stringify(['SET','algobot:inline','test123']);
+        const req = https.request({
+          hostname: parsedUrl.hostname,
+          path: '/',
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${UPSTASH_TOKEN}`, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+        }, (r) => {
+          let d = ''; r.on('data', c => d += c); r.on('end', () => resolve(d));
+        });
+        req.on('error', e => resolve('ERR:'+e.message));
+        req.write(body); req.end();
+      });
+    } catch(e) { inlineResult = 'EXCEPTION:'+e.message; }
+    const setResult  = await redisCmd('SET', 'algobot:test', JSON.stringify({ok:true,ts:Date.now()}));
     const saveResult = await redisSet(DB_KEY, db);
-    json(res, 200, { setResult, getResult, saveResult, url: UPSTASH_URL ? 'set' : 'MISSING', token: UPSTASH_TOKEN ? 'set' : 'MISSING' });
+    json(res, 200, { urlLen, tokenLen, urlVal, inlineResult, setResult, saveResult });
     return;
   }
 
