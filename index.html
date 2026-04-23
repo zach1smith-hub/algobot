@@ -286,11 +286,11 @@ input:focus{border-color:var(--green)}
     </div>
     <div id="live-warn" class="warn-box" style="display:none">⚠️ Live trading uses real money. Only after validating paper results.</div>
     <div id="api-section" style="display:none">
-      <label class="input-label">Binance API Key</label>
-      <input type="password" id="inp-key" placeholder="Your Binance API key"/>
-      <label class="input-label">Binance API Secret</label>
-      <input type="password" id="inp-secret" placeholder="Your Binance API secret"/>
-      <div style="font-size:11px;color:var(--muted);margin-bottom:12px">Enable Spot trading only. Never enable withdrawals.</div>
+      <label class="input-label">Coinbase API Key</label>
+      <input type="password" id="inp-key" placeholder="Coinbase Advanced Trade API key"/>
+      <label class="input-label">Coinbase API Secret</label>
+      <input type="password" id="inp-secret" placeholder="Coinbase Advanced Trade API secret"/>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:12px">Create at coinbase.com/settings/api — enable Trade permission only.</div>
       <div class="section-sep"></div>
     </div>
 
@@ -561,7 +561,7 @@ function renderTrades(trades) {
   const body = document.getElementById('trades-body');
   if (!closed.length) { body.innerHTML='<div class="empty">No closed trades yet</div>'; return; }
   body.innerHTML = `<table class="tbl"><thead><tr>
-    <th>Symbol</th><th>Side</th><th class="tr">Entry</th><th class="tr">Exit</th><th class="tr">P&L</th><th class="tr">Reason</th>
+    <th>Symbol</th><th>Side</th><th class="tr">Entry</th><th class="tr">Exit</th><th class="tr">P&L</th><th class="tr">Fees</th><th class="tr">Reason</th><th class="tr">Opened</th><th class="tr">Closed</th>
   </tr></thead><tbody>${closed.map(t=>{
     const up=(t.pnl||0)>=0;
     return `<tr>
@@ -570,7 +570,10 @@ function renderTrades(trades) {
       <td class="tr mono">$${fmt(t.entryPrice)}</td>
       <td class="tr mono">$${fmt(t.exitPrice)}</td>
       <td class="tr mono ${up?'up':'down'}">${up?'+':''}\$${(t.pnl||0).toFixed(4)}</td>
+      <td class="tr mono" style="color:var(--muted)">-$${(t.totalFees||0).toFixed(4)}</td>
       <td class="tr" style="font-size:10px;color:var(--muted)">${(t.reason||'').replace('_',' ')}</td>
+      <td class="tr" style="font-size:10px;color:var(--muted)">${t.openedAtStr||'—'}</td>
+      <td class="tr" style="font-size:10px;color:var(--muted)">${t.closedAtStr||'—'}</td>
     </tr>`;
   }).join('')}</tbody></table>`;
 }
@@ -674,8 +677,8 @@ async function saveSettings() {
   };
   const key=document.getElementById('inp-key')?.value.trim();
   const sec=document.getElementById('inp-secret')?.value.trim();
-  if (key) updates.binanceApiKey=key;
-  if (sec) updates.binanceApiSecret=sec;
+  if (key) updates.cbApiKey=key;
+  if (sec) updates.cbApiSecret=sec;
   try {
     await api('/api/config','POST', updates);
     localCfg = {}; // clear local overrides
