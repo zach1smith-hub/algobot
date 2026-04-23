@@ -2,7 +2,7 @@
  * AlgoBot — 24/7 Cloud Trading Bot
  * - Price feed: Coinbase Advanced Trade public API
  * - Live trading: Coinbase Advanced Trade (API key + secret in env)
- * - Paper trading: full fee simulation (0.6% taker each side)
+ * - Paper trading: full fee simulation (1.2% taker each side, Coinbase base tier)
  * - Persistence: Upstash Redis (survives all redeploys)
  * - Phone app is a pure read-only dashboard
  */
@@ -259,7 +259,7 @@ function adaptParams() {
 }
 
 // ─── Trade execution ──────────────────────────────────────────────────────────
-const FEE_RATE = 0.006; // 0.6% Coinbase taker per side
+const FEE_RATE = 0.012; // 1.2% taker fee per side — Coinbase Advanced Trade base tier (<$1k/month, market orders)
 
 function fmtTime(ts) {
   return new Date(ts).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit', hour12:true });
