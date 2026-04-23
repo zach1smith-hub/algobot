@@ -214,13 +214,20 @@ async function analyze(symbol) {
   const ef = ema(closes, cfg.emaFast), es = ema(closes, cfg.emaSlow), ri = rsi(closes, cfg.rsiPeriod);
   const L = closes.length - 1, P = L - 1;
   if (isNaN(ef[L]) || isNaN(es[L]) || isNaN(ri[L])) return null;
-  const bullCross = ef[P] <= es[P] && ef[L] > es[L];
-  const bearCross = ef[P] >= es[P] && ef[L] < es[L];
+  const bullCross = ef[P] <= es[P] && ef[L] > es[L]; // EMA fast crosses above slow
+  const bearCross = ef[P] >= es[P] && ef[L] < es[L]; // EMA fast crosses below slow
+  const bullTrend = ef[L] > es[L]; // fast above slow = uptrend
+  const bearTrend = ef[L] < es[L]; // fast below slow = downtrend
   let signal = 'hold', conf = 50;
-  if      (bullCross && ri[L] < cfg.rsiOverbought)  { signal = 'buy';  conf = 70 + (cfg.rsiOverbought - ri[L]) / cfg.rsiOverbought * 30; }
-  else if (ef[L] > es[L] && ri[L] < 45)             { signal = 'buy';  conf = 45 + (45 - ri[L]); }
-  else if (bearCross && ri[L] > cfg.rsiOversold)    { signal = 'sell'; conf = 70 + (ri[L] - cfg.rsiOversold) / (100 - cfg.rsiOversold) * 30; }
-  else if (ef[L] < es[L] && ri[L] > 55)             { signal = 'sell'; conf = 40 + (ri[L] - 55); }
+
+  // Strong buy: crossover happening now
+  if      (bullCross)                                { signal = 'buy';  conf = 80; }
+  // Moderate buy: already in uptrend + RSI not overbought
+  else if (bullTrend && ri[L] < cfg.rsiOverbought)  { signal = 'buy';  conf = 55 + (cfg.rsiOverbought - ri[L]) * 0.5; }
+  // Strong sell: crossover happening now
+  else if (bearCross)                                { signal = 'sell'; conf = 80; }
+  // Moderate sell: in downtrend + RSI not oversold
+  else if (bearTrend && ri[L] > cfg.rsiOversold)    { signal = 'sell'; conf = 55 + (ri[L] - cfg.rsiOversold) * 0.5; }
   conf = Math.min(99, Math.max(1, conf));
   const price = priceCache[symbol] || closes[L];
   return { symbol, price, signal, emaFast: ef[L], emaSlow: es[L], rsi: ri[L], confidence: conf, time: Date.now() };
