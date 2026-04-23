@@ -220,6 +220,7 @@ input:focus{border-color:var(--green)}
       <div class="stat-card"><div class="stat-val" id="s-pnl">—</div><div class="stat-label">Realized P&L</div><div class="stat-sub" id="s-pnl-sub">vs $20 start</div></div>
       <div class="stat-card"><div class="stat-val" id="s-wr">—</div><div class="stat-label">Win Rate</div><div class="stat-sub" id="s-trades">0 trades</div></div>
       <div class="stat-card"><div class="stat-val" id="s-pos">0</div><div class="stat-label">Open Positions</div><div class="stat-sub" id="s-dep">$0.00 deployed</div></div>
+      <div class="stat-card"><div class="stat-val down" id="s-fees">-$0.0000</div><div class="stat-label">Fees Paid</div><div class="stat-sub">0.6% per side</div></div>
     </div>
 
     <div class="card">
@@ -444,6 +445,10 @@ function renderAll() {
   set('s-trades', (stats.totalTrades||0)+' trades');
   set('s-pos', stats.openPositions||0);
   set('s-dep', '$'+fmt(stats.positionsValue||0));
+  // Fees
+  const fees = stats.totalFees || 0;
+  const feesEl = document.getElementById('s-fees');
+  if (feesEl) { feesEl.textContent = '-$'+fees.toFixed(4); }
 
   // Prices
   renderPrices(prices, cfg.pairs);
