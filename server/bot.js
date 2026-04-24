@@ -88,40 +88,35 @@ async function loadDb() {
 }
 async function saveDb() { await redisSet(DB_KEY, db); }
 
-// ─── Coinbase Advanced Trade — public price feed ───────────────────────────
-const CB_HOST = 'api.coinbase.com';
-function toCb(pair) { return pair.replace('/', '-'); }
-
+// ─── Binance public API — price feed + candles for signals ──────────────────
+// Binance public data needs no auth and has the best candle quality
+// Coinbase is only used for live order execution
+const BINANCE_HOST = 'api.binance.com';
 let priceCache = {};
 
-async function fetchAllPrices(pairs) {
-  for (const pair of pairs) {
-    try {
-      const raw = await httpsGet(CB_HOST, `/api/v3/brokerage/market/products/${toCb(pair)}/ticker?limit=1`, {});
-      if (!raw) continue;
-      const j = JSON.parse(raw);
-      const p = parseFloat(j.trades?.[0]?.price || j.best_bid || 0);
-      if (p > 0) priceCache[pair] = p;
-    } catch {}
-  }
-}
+function toBn(pair) { return pair.replace('/', ''); }
 
-const CB_GRAN = { '1m':'ONE_MINUTE','5m':'FIVE_MINUTE','15m':'FIFTEEN_MINUTE','1h':'ONE_HOUR','6h':'SIX_HOUR','1d':'ONE_DAY' };
-const CB_SECS = { ONE_MINUTE:60,FIVE_MINUTE:300,FIFTEEN_MINUTE:900,ONE_HOUR:3600,SIX_HOUR:21600,ONE_DAY:86400 };
+async function fetchAllPrices(pairs) {
+  try {
+    const raw = await httpsGet(BINANCE_HOST, '/api/v3/ticker/price', {});
+    if (!raw) return;
+    const all = JSON.parse(raw);
+    const wanted = new Set(pairs.map(p => toBn(p)));
+    all.forEach(t => {
+      if (wanted.has(t.symbol)) priceCache[t.symbol.slice(0,-4)+'/USDT'] = parseFloat(t.price);
+    });
+    console.log('[PRICES]', JSON.stringify(priceCache));
+  } catch (e) { console.warn('fetchAllPrices failed:', e.message); }
+}
 
 async function fetchKlines(symbol, interval = '15m', limit = 100) {
   try {
-    const gran  = CB_GRAN[interval] || 'FIFTEEN_MINUTE';
-    const secs  = CB_SECS[gran] || 900;
-    const end   = Math.floor(Date.now() / 1000);
-    const start = end - secs * limit;
-    const raw   = await httpsGet(CB_HOST,
-      `/api/v3/brokerage/market/products/${toCb(symbol)}/candles?start=${start}&end=${end}&granularity=${gran}`, {});
+    const raw = await httpsGet(BINANCE_HOST,
+      `/api/v3/klines?symbol=${toBn(symbol)}&interval=${interval}&limit=${limit}`, {});
     if (!raw) throw new Error('no response');
-    const j = JSON.parse(raw);
-    const candles = j.candles || [];
-    if (!candles.length) throw new Error('empty');
-    return candles.reverse().map(c => ({ time: +c.start * 1000, close: parseFloat(c.close) }));
+    const data = JSON.parse(raw);
+    if (!data.length) throw new Error('empty');
+    return data.map(k => ({ time: k[0], close: parseFloat(k[4]) }));
   } catch (e) {
     console.warn(`fetchKlines ${symbol}: ${e.message} — simulating`);
     return simulateKlines(symbol, limit);
@@ -243,14 +238,19 @@ function adaptParams() {
   const winRate = wins.length / recent.length;
   const cfg = db.config;
   let changed = false;
+  // Hard bounds: OS must stay 20-38, OB must stay 62-80
+  // This prevents learning from making thresholds nonsensical
   if (winRate < 0.40) {
-    if (cfg.rsiOversold < 38)   { cfg.rsiOversold   = Math.min(38, cfg.rsiOversold   + 2); changed = true; }
-    if (cfg.rsiOverbought > 65) { cfg.rsiOverbought = Math.max(65, cfg.rsiOverbought - 2); changed = true; }
+    if (cfg.rsiOversold < 35)   { cfg.rsiOversold   = Math.min(35, cfg.rsiOversold   + 1); changed = true; }
+    if (cfg.rsiOverbought > 65) { cfg.rsiOverbought = Math.max(65, cfg.rsiOverbought - 1); changed = true; }
   }
   if (winRate > 0.65) {
     if (cfg.rsiOversold > 25)   { cfg.rsiOversold   = Math.max(25, cfg.rsiOversold   - 1); changed = true; }
     if (cfg.rsiOverbought < 75) { cfg.rsiOverbought = Math.min(75, cfg.rsiOverbought + 1); changed = true; }
   }
+  // Safety: never let OS > 40 or OB < 60 — that would break signal logic
+  if (cfg.rsiOversold   > 40) { cfg.rsiOversold   = 30; changed = true; }
+  if (cfg.rsiOverbought < 60) { cfg.rsiOverbought = 70; changed = true; }
   if (wins.length > 0 && losses.length > 0) {
     const avgWin  = wins.reduce((s,t)=>s+(t.pnlPct||0),0) / wins.length;
     const avgLoss = Math.abs(losses.reduce((s,t)=>s+(t.pnlPct||0),0) / losses.length);
